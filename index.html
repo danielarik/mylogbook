@@ -239,6 +239,59 @@
         let currentUser = null;
         let profileData = {};
         let masterKamus = [];
+    
+    async function loadDataForAtasan(userId) {
+    try {
+        console.log("Memulai pemuatan data untuk Atasan, User ID:", userId);
+
+        // 1. Ambil Profil Pegawai (Nama, NIP, Instansi, dll)
+        const { data: pData, error: pErr } = await _supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .single();
+
+        if (pErr) {
+            console.error("Gagal mengambil profil:", pErr);
+            throw new Error("Profil tidak ditemukan atau database belum diatur akses publiknya.");
+        }
+        
+        // Simpan ke variabel global agar renderRekap bisa membaca identitasnya
+        profileData = pData;
+
+        // 2. Ambil Kamus Kegiatan (Agar baris tabel muncul)
+        const { data: kData, error: kErr } = await _supabase
+            .from('kamus_kegiatan')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: true });
+
+        if (kErr) {
+            console.error("Gagal mengambil kamus:", kErr);
+            throw new Error("Gagal memuat daftar butir kegiatan.");
+        }
+
+        // Simpan ke variabel global
+        masterKamus = kData || [];
+
+        // 3. Setelah Profil & Kamus siap, jalankan renderRekap secara otomatis
+        // Kita gunakan 'matriks' sebagai tampilan awal untuk atasan
+        await renderRekap('matriks');
+
+        // Sembunyikan elemen yang tidak perlu dilihat atasan (opsional)
+        const btnSimpan = document.querySelector('button[onclick="saveLog()"]');
+        if (btnSimpan) btnSimpan.style.display = 'none';
+
+    } catch (err) {
+        console.error("Error utama loadDataForAtasan:", err);
+        alert("Gagal memuat laporan: " + err.message);
+        // Jika gagal, arahkan kembali ke login atau beri pesan jelas
+        document.getElementById('rekap-table-container').innerHTML = 
+            `<div class="p-10 text-center text-red-500 font-bold border-2 border-dashed border-red-200">
+                Data gagal dimuat. Pastikan ID Pegawai benar dan koneksi internet stabil.
+             </div>`;
+    }
+}
 
         window.onload = async () => {
     // --- SETUP AWAL (Koding Lama Anda) ---
@@ -283,26 +336,35 @@
         }
     };
 
-        async function loadDataForAtasan(userId) {
-            try {
-                // 1. Ambil Profil Anda
-                const { data: pData, error: pErr } = await _supabase.from('profiles').select('*').eq('id', userId).single();
-                if (pData) window.profileData = pData;
+async function loadDataForAtasan(userId) {
+    try {
+        // 1. Ambil Profil Pegawai
+        const { data: pData, error: pErr } = await _supabase.from('profiles').select('*').eq('id', userId).single();
+        if (pErr) throw pErr;
+        profileData = pData; // Simpan ke variabel global
 
-                // 2. Ambil Log Kegiatan Anda
-                const { data: lData, error: lErr } = await _supabase.from('logs').select('*, kamus_kegiatan(*)').eq('user_id', userId);
-                if (lData) {
-                    window.logs = lData;
-                    // Langsung tampilkan laporan (default: Matriks)
-                    if (typeof renderRekap === "function") renderRekap('matriks');
-                }
-                
-                if (pErr || lErr) alert("Gagal memuat data. Pastikan ID benar dan internet aktif.");
-                
-            } catch (err) {
-                console.error("Error loading share link:", err);
-            }
+        // 2. Ambil Kamus Kegiatan (Penting agar tabel tidak kosong)
+        const { data: kData } = await _supabase.from('kamus_kegiatan').select('*').eq('user_id', userId).order('created_at');
+        masterKamus = kData || [];
+
+        // 3. Ambil Logbook (Gunakan nama tabel yang benar: logbook_harian)
+        const { data: lData, error: lErr } = await _supabase.from('logbook_harian').select('*, kamus_kegiatan(*)').eq('user_id', userId);
+        if (lErr) throw lErr;
+        
+        // Simpan ke variabel global agar bisa dibaca fungsi renderRekap
+        window.logs = lData || [];
+        
+        // 4. Jalankan render otomatis
+        if (typeof renderRekap === "function") {
+            // Kita set default tampilan ke matriks
+            renderRekap('matriks'); 
         }
+        
+    } catch (err) {
+        console.error("Error loading share link:", err);
+        alert("Gagal memuat data: " + err.message);
+    }
+}
 
         async function checkUser() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -508,146 +570,173 @@
         }
 
         async function renderRekap(mode) {
-            showSection('sec-rekap');
-            const bln = parseInt(document.getElementById('sel-bulan').value);
-            const thn = parseInt(document.getElementById('sel-tahun').value);
-            const tw = parseInt(document.getElementById('sel-triwulan').value);
-            const listBulan = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+    // 1. Persiapan Awal & Navigasi
+    showSection('sec-rekap');
+    
+    // Deteksi ID Target: Ambil dari URL jika mode share, atau dari user login jika mode pribadi
+    const urlParams = new URLSearchParams(window.location.search);
+    const viewUserId = urlParams.get('view');
+    const targetUserId = viewUserId || (currentUser ? currentUser.id : null);
 
-            // Update Header Profil (Tetap Sama)
-            document.getElementById('r-org').innerText = profileData.instansi || '-';
-            document.getElementById('r-nama').innerText = profileData.nama_lengkap || '-';
-            document.getElementById('r-nip').innerText = profileData.nip || '-';
-            document.getElementById('r-gol').innerText = profileData.golongan || '-';
-            document.getElementById('r-jabatan').innerText = profileData.jabatan || '-';
-            document.getElementById('r-unit').innerText = profileData.unit_kerja || '-';
-            document.getElementById('r-kota').innerText = profileData.kota || '-';
-            document.getElementById('r-atasan-nama').innerText = profileData.atasan_nama || '-';
-            document.getElementById('r-atasan-jab').innerText = profileData.atasan_jabatan || '-';
-            document.getElementById('r-atasan-nip').innerText = profileData.atasan_nip || '-';
-            document.getElementById('r-saya-nama').innerText = profileData.nama_lengkap || '-';
-            document.getElementById('r-saya-nip').innerText = profileData.nip || '-';
+    if (!targetUserId) {
+        return alert("Maaf, ID Pengguna tidak ditemukan. Silakan login kembali.");
+    }
 
-            const tglCetakVal = document.getElementById('tgl-cetak-manual').value;
-            const tglCetak = tglCetakVal ? new Date(tglCetakVal) : new Date();
-            document.getElementById('r-tgl-cetak').innerText = `${profileData.kota || 'Kota'}, ${tglCetak.toLocaleDateString('id-ID', {day:'numeric', month:'long', year:'numeric'})}`;
+    // Ambil nilai dari input filter
+    const bln = parseInt(document.getElementById('sel-bulan').value);
+    const thn = parseInt(document.getElementById('sel-tahun').value);
+    const tw = parseInt(document.getElementById('sel-triwulan').value);
+    const listBulan = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
 
-            let startDate, endDate;
-            if(mode === 'matriks' || mode === 'harian_print') {
-                const bulanStr = String(bln + 1).padStart(2, '0');
-                startDate = `${thn}-${bulanStr}-01`;
-                const lastDay = new Date(thn, bln + 1, 0).getDate();
-                endDate = `${thn}-${bulanStr}-${lastDay}`;
-                document.getElementById('r-title').innerText = mode === 'matriks' ? "LAPORAN LOGBOOK BULANAN" : "DETAIL HARIAN LOGBOOK";
-                document.getElementById('r-periode').innerText = `Periode: ${listBulan[bln]} ${thn}`;
-            } else if(mode === 'triwulan') {
-                const startM = (tw - 1) * 3;
-                startDate = `${thn}-${String(startM + 1).padStart(2, '0')}-01`;
-                const lastDayTW = new Date(thn, startM + 3, 0).getDate();
-                endDate = `${thn}-${String(startM + 3).padStart(2, '0')}-${lastDayTW}`;
-                document.getElementById('r-title').innerText = "LAPORAN LOGBOOK TRIWULAN";
-                document.getElementById('r-periode').innerText = `Triwulan ${tw} (${listBulan[startM]} - ${listBulan[startM+2]}) ${thn}`;
-            } else if(mode === 'tahunan') {
-                startDate = `${thn}-01-01`;
-                endDate = `${thn}-12-31`;
-                document.getElementById('r-title').innerText = "LAPORAN LOGBOOK TAHUNAN";
-                document.getElementById('r-periode').innerText = `Periode Tahun: ${thn}`;
+    // 2. Update Header Profil (Informasi di atas tabel)
+    document.getElementById('r-org').innerText = profileData.instansi || '-';
+    document.getElementById('r-nama').innerText = profileData.nama_lengkap || '-';
+    document.getElementById('r-nip').innerText = profileData.nip || '-';
+    document.getElementById('r-gol').innerText = profileData.golongan || '-';
+    document.getElementById('r-jabatan').innerText = profileData.jabatan || '-';
+    document.getElementById('r-unit').innerText = profileData.unit_kerja || '-';
+    document.getElementById('r-kota').innerText = profileData.kota || '-';
+    document.getElementById('r-atasan-nama').innerText = profileData.atasan_nama || '-';
+    document.getElementById('r-atasan-jab').innerText = profileData.atasan_jabatan || '-';
+    document.getElementById('r-atasan-nip').innerText = profileData.atasan_nip || '-';
+    document.getElementById('r-saya-nama').innerText = profileData.nama_lengkap || '-';
+    document.getElementById('r-saya-nip').innerText = profileData.nip || '-';
+
+    // Logika Tanggal Cetak
+    const tglCetakVal = document.getElementById('tgl-cetak-manual').value;
+    const tglCetak = tglCetakVal ? new Date(tglCetakVal) : new Date();
+    document.getElementById('r-tgl-cetak').innerText = `${profileData.kota || 'Kota'}, ${tglCetak.toLocaleDateString('id-ID', {day:'numeric', month:'long', year:'numeric'})}`;
+
+    // 3. Penentuan Range Tanggal Filter
+    let startDate, endDate;
+    if(mode === 'matriks' || mode === 'harian_print') {
+        const bulanStr = String(bln + 1).padStart(2, '0');
+        startDate = `${thn}-${bulanStr}-01`;
+        const lastDay = new Date(thn, bln + 1, 0).getDate();
+        endDate = `${thn}-${bulanStr}-${lastDay}`;
+        document.getElementById('r-title').innerText = mode === 'matriks' ? "LAPORAN LOGBOOK BULANAN" : "DETAIL HARIAN LOGBOOK";
+        document.getElementById('r-periode').innerText = `Periode: ${listBulan[bln]} ${thn}`;
+    } else if(mode === 'triwulan') {
+        const startM = (tw - 1) * 3;
+        startDate = `${thn}-${String(startM + 1).padStart(2, '0')}-01`;
+        const lastDayTW = new Date(thn, startM + 3, 0).getDate();
+        endDate = `${thn}-${String(startM + 3).padStart(2, '0')}-${lastDayTW}`;
+        document.getElementById('r-title').innerText = "LAPORAN LOGBOOK TRIWULAN";
+        document.getElementById('r-periode').innerText = `Triwulan ${tw} (${listBulan[startM]} - ${listBulan[startM+2]}) ${thn}`;
+    } else if(mode === 'tahunan') {
+        startDate = `${thn}-01-01`;
+        endDate = `${thn}-12-31`;
+        document.getElementById('r-title').innerText = "LAPORAN LOGBOOK TAHUNAN";
+        document.getElementById('r-periode').innerText = `Periode Tahun: ${thn}`;
+    }
+
+    // 4. Pengambilan Data dari Supabase (Menggunakan targetUserId)
+    const { data: logs, error: errLogs } = await _supabase.from('logbook_harian')
+        .select('*, kamus_kegiatan(*)')
+        .eq('user_id', targetUserId)
+        .gte('tanggal', startDate)
+        .lte('tanggal', endDate);
+
+    const { data: allLogs, error: errAll } = await _supabase.from('logbook_harian')
+        .select('*')
+        .eq('user_id', targetUserId);
+
+    if (errLogs || errAll) {
+        return alert("Gagal memuat data dari database. Pastikan internet aktif.");
+    }
+    
+    // 5. Pembentukan Struktur HTML Tabel
+    let html = `<table><thead>`;
+    
+    // --- MODE 1: MATRIKS BULANAN ---
+    if(mode === 'matriks') {
+        const totalDays = new Date(thn, bln + 1, 0).getDate();
+        html += `<tr><th rowspan="2">No</th><th rowspan="2">Butir Kegiatan (Target | Real | Sisa)</th><th colspan="${totalDays}">Tanggal</th><th rowspan="2">Total</th><th rowspan="2">Link Bukti</th></tr><tr>`;
+        for(let d=1; d<=totalDays; d++) html += `<th class="w-6">${d}</th>`;
+        html += `</tr></thead><tbody>`;
+        
+        masterKamus.forEach((k, i) => {
+            let totalBulanIni = 0;
+            const target = k.target_tahunan || 0;
+            const realisasiKumulatif = (allLogs || []).filter(l => l.kegiatan_id == k.id).reduce((a,b) => a + (b.qty || 0), 0);
+            const sisa = target - realisasiKumulatif;
+            
+            html += `<tr><td class="text-center">${i+1}</td><td class="text-left-imp"><div>${k.nama_kegiatan}</div><div class="text-[6pt] text-blue-600 font-bold">T: ${target} | R: ${realisasiKumulatif} | S: ${sisa}</div></td>`;
+            
+            for(let d=1; d<=totalDays; d++) {
+                const dayStr = `${thn}-${String(bln+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                const qtyDay = (logs || []).filter(l => l.kegiatan_id == k.id && l.tanggal === dayStr).reduce((a,b) => a + (b.qty || 0), 0);
+                totalBulanIni += qtyDay;
+                html += `<td class="text-center">${qtyDay || ''}</td>`;
+            }
+            html += `<td class="font-bold text-center bg-slate-50">${totalBulanIni}</td>
+                     <td class="text-center"><a href="${k.link_bukti_dukung || '#'}" target="_blank" style="color:blue; font-size:8pt">Buka Bukti</a></td></tr>`;
+        });
+
+    // --- MODE 2: TRIWULAN ---
+    } else if(mode === 'triwulan') {
+        const startMonth = (tw - 1) * 3;
+        html += `<tr><th rowspan="2">No</th><th rowspan="2">Butir Kegiatan (Target | Real | Sisa)</th><th colspan="3">Bulan</th><th rowspan="2">Total TW</th><th rowspan="2">Hasil Kerja</th></tr>
+                 <tr><th>${listBulan[startMonth]}</th><th>${listBulan[startMonth+1]}</th><th>${listBulan[startMonth+2]}</th></tr></thead><tbody>`;
+        
+        masterKamus.forEach((k, i) => {
+            const target = k.target_tahunan || 0;
+            const realisasiKumulatif = (allLogs || []).filter(l => l.kegiatan_id == k.id).reduce((a,b) => a + (b.qty || 0), 0);
+            
+            let twTotal = 0;
+            let mValues = [];
+            for(let m=0; m<3; m++) {
+                const curM = startMonth + m;
+                const mQty = (logs || []).filter(l => {
+                    const d = new Date(l.tanggal);
+                    return l.kegiatan_id == k.id && d.getMonth() === curM;
+                }).reduce((a,b) => a + (b.qty || 0), 0);
+                mValues.push(mQty);
+                twTotal += mQty;
             }
 
-            const { data: logs } = await _supabase.from('logbook_harian').select('*, kamus_kegiatan(*)').eq('user_id', currentUser.id).gte('tanggal', startDate).lte('tanggal', endDate);
-            const { data: allLogs } = await _supabase.from('logbook_harian').select('*').eq('user_id', currentUser.id);
+            html += `<tr><td class="text-center">${i+1}</td><td class="text-left-imp"><div>${k.nama_kegiatan}</div><div class="text-[6pt] text-blue-600 font-bold">T: ${target} | R: ${realisasiKumulatif} | S: ${target-realisasiKumulatif}</div></td>
+                     <td class="text-center">${mValues[0] || ''}</td><td class="text-center">${mValues[1] || ''}</td><td class="text-center">${mValues[2] || ''}</td>
+                     <td class="font-bold text-center">${twTotal}</td><td class="text-center">${k.hasil_kerja || '-'}</td></tr>`;
+        });
+
+    // --- MODE 3: TAHUNAN ---
+    } else if(mode === 'tahunan') {
+        html += `<tr><th rowspan="2">No</th><th rowspan="2">Butir Kegiatan (Target | Real | Sisa)</th><th colspan="12">Bulan</th><th rowspan="2">Total Thn</th></tr>
+                 <tr>`;
+        for(let m=0; m<12; m++) html += `<th style="font-size:7pt">${listBulan[m].substring(0,3)}</th>`;
+        html += `</tr></thead><tbody>`;
+
+        masterKamus.forEach((k, i) => {
+            const target = k.target_tahunan || 0;
+            const realisasiKumulatif = (allLogs || []).filter(l => l.kegiatan_id == k.id).reduce((a,b) => a + (b.qty || 0), 0);
             
-            let html = `<table><thead>`;
-            
-            // --- MODE 1: MATRIKS BULANAN ---
-            if(mode === 'matriks') {
-                const totalDays = new Date(thn, bln + 1, 0).getDate();
-                html += `<tr><th rowspan="2">No</th><th rowspan="2">Butir Kegiatan (Target | Real | Sisa)</th><th colspan="${totalDays}">Tanggal</th><th rowspan="2">Total</th><th rowspan="2">Link Bukti</th></tr><tr>`;
-                for(let d=1; d<=totalDays; d++) html += `<th class="w-6">${d}</th>`;
-                html += `</tr></thead><tbody>`;
-                
-                masterKamus.forEach((k, i) => {
-                    let totalBulanIni = 0;
-                    const target = k.target_tahunan || 0;
-                    const realisasiKumulatif = (allLogs || []).filter(l => l.kegiatan_id == k.id).reduce((a,b) => a + (b.qty || 0), 0);
-                    const sisa = target - realisasiKumulatif;
-                    
-                    html += `<tr><td class="text-center">${i+1}</td><td class="text-left-imp"><div>${k.nama_kegiatan}</div><div class="text-[6pt] text-blue-600 font-bold">T: ${target} | R: ${realisasiKumulatif} | S: ${sisa}</div></td>`;
-                    
-                    for(let d=1; d<=totalDays; d++) {
-                        const dayStr = `${thn}-${String(bln+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-                        const qtyDay = (logs || []).filter(l => l.kegiatan_id == k.id && l.tanggal === dayStr).reduce((a,b) => a + (b.qty || 0), 0);
-                        totalBulanIni += qtyDay;
-                        html += `<td class="text-center">${qtyDay || ''}</td>`;
-                    }
-                    html += `<td class="font-bold text-center bg-slate-50">${totalBulanIni}</td>
-                            <td class="text-center"><a href="${k.link_bukti_dukung || '#'}" target="_blank" style="color:blue; font-size:8pt">Buka Bukti</a></td></tr>`;
-                });
-
-            // --- MODE 2: TRIWULAN ---
-            } else if(mode === 'triwulan') {
-                const startMonth = (tw - 1) * 3;
-                html += `<tr><th rowspan="2">No</th><th rowspan="2">Butir Kegiatan (Target | Real | Sisa)</th><th colspan="3">Bulan</th><th rowspan="2">Total TW</th><th rowspan="2">Hasil Kerja</th></tr>
-                        <tr><th>${listBulan[startMonth]}</th><th>${listBulan[startMonth+1]}</th><th>${listBulan[startMonth+2]}</th></tr></thead><tbody>`;
-                
-                masterKamus.forEach((k, i) => {
-                    const target = k.target_tahunan || 0;
-                    const realisasiKumulatif = (allLogs || []).filter(l => l.kegiatan_id == k.id).reduce((a,b) => a + (b.qty || 0), 0);
-                    
-                    let twTotal = 0;
-                    let mValues = [];
-                    for(let m=0; m<3; m++) {
-                        const curM = startMonth + m;
-                        const mQty = (logs || []).filter(l => {
-                            const d = new Date(l.tanggal);
-                            return l.kegiatan_id == k.id && d.getMonth() === curM;
-                        }).reduce((a,b) => a + (b.qty || 0), 0);
-                        mValues.push(mQty);
-                        twTotal += mQty;
-                    }
-
-                    html += `<tr><td class="text-center">${i+1}</td><td class="text-left-imp"><div>${k.nama_kegiatan}</div><div class="text-[6pt] text-blue-600 font-bold">T: ${target} | R: ${realisasiKumulatif} | S: ${target-realisasiKumulatif}</div></td>
-                            <td class="text-center">${mValues[0] || ''}</td><td class="text-center">${mValues[1] || ''}</td><td class="text-center">${mValues[2] || ''}</td>
-                            <td class="font-bold text-center">${twTotal}</td><td class="text-center">${k.hasil_kerja || '-'}</td></tr>`;
-                });
-
-            // --- MODE 3: TAHUNAN ---
-            } else if(mode === 'tahunan') {
-                html += `<tr><th rowspan="2">No</th><th rowspan="2">Butir Kegiatan (Target | Real | Sisa)</th><th colspan="12">Bulan</th><th rowspan="2">Total Thn</th></tr>
-                        <tr>`;
-                for(let m=0; m<12; m++) html += `<th style="font-size:7pt">${listBulan[m].substring(0,3)}</th>`;
-                html += `</tr></thead><tbody>`;
-
-                masterKamus.forEach((k, i) => {
-                    const target = k.target_tahunan || 0;
-                    const realisasiKumulatif = (allLogs || []).filter(l => l.kegiatan_id == k.id).reduce((a,b) => a + (b.qty || 0), 0);
-                    
-                    let thnTotal = 0;
-                    let rowBulan = "";
-                    for(let m=0; m<12; m++) {
-                        const mQty = (logs || []).filter(l => {
-                            const d = new Date(l.tanggal);
-                            return l.kegiatan_id == k.id && d.getMonth() === m;
-                        }).reduce((a,b) => a + (b.qty || 0), 0);
-                        thnTotal += mQty;
-                        rowBulan += `<td class="text-center" style="font-size:8pt">${mQty || ''}</td>`;
-                    }
-
-                    html += `<tr><td class="text-center">${i+1}</td><td class="text-left-imp"><div>${k.nama_kegiatan}</div><div class="text-[6pt] text-blue-600 font-bold">T: ${target} | R: ${realisasiKumulatif} | S: ${target-realisasiKumulatif}</div></td>
-                            ${rowBulan}<td class="font-bold text-center">${thnTotal}</td></tr>`;
-                });
-
-            // --- MODE 4: DETAIL HARIAN ---
-            } else if(mode === 'harian_print') {
-                html += `<tr><th>No</th><th>Tanggal</th><th>Butir Kegiatan</th><th>No. RM</th><th>Waktu</th><th>Qty</th><th>Bukti</th></tr></thead><tbody>`;
-                (logs || []).sort((a,b) => new Date(a.tanggal) - new Date(b.tanggal)).forEach((l, i) => {
-                    html += `<tr><td class="text-center">${i+1}</td><td class="text-center">${l.tanggal}</td><td class="text-left-imp">${l.kamus_kegiatan?.nama_kegiatan || '-'}</td><td class="text-center">${l.no_rm || '-'}</td><td class="text-center">${l.jam_mulai} - ${l.jam_selesai}</td><td class="text-center">${l.qty}</td><td class="text-center"><a href="${l.kamus_kegiatan?.link_bukti_dukung}" target="_blank">Link</a></td></tr>`;
-                });
+            let thnTotal = 0;
+            let rowBulan = "";
+            for(let m=0; m<12; m++) {
+                const mQty = (logs || []).filter(l => {
+                    const d = new Date(l.tanggal);
+                    return l.kegiatan_id == k.id && d.getMonth() === m;
+                }).reduce((a,b) => a + (b.qty || 0), 0);
+                thnTotal += mQty;
+                rowBulan += `<td class="text-center" style="font-size:8pt">${mQty || ''}</td>`;
             }
-            
-            html += `</tbody></table>`;
-            document.getElementById('rekap-table-container').innerHTML = html;
-        }
+
+            html += `<tr><td class="text-center">${i+1}</td><td class="text-left-imp"><div>${k.nama_kegiatan}</div><div class="text-[6pt] text-blue-600 font-bold">T: ${target} | R: ${realisasiKumulatif} | S: ${target-realisasiKumulatif}</div></td>
+                     ${rowBulan}<td class="font-bold text-center">${thnTotal}</td></tr>`;
+        });
+
+    // --- MODE 4: DETAIL HARIAN ---
+    } else if(mode === 'harian_print') {
+        html += `<tr><th>No</th><th>Tanggal</th><th>Butir Kegiatan</th><th>No. RM</th><th>Waktu</th><th>Qty</th><th>Bukti</th></tr></thead><tbody>`;
+        (logs || []).sort((a,b) => new Date(a.tanggal) - new Date(b.tanggal)).forEach((l, i) => {
+            html += `<tr><td class="text-center">${i+1}</td><td class="text-center">${l.tanggal}</td><td class="text-left-imp">${l.kamus_kegiatan?.nama_kegiatan || '-'}</td><td class="text-center">${l.no_rm || '-'}</td><td class="text-center">${l.jam_mulai} - ${l.jam_selesai}</td><td class="text-center">${l.qty}</td><td class="text-center"><a href="${l.kamus_kegiatan?.link_bukti_dukung || '#'}" target="_blank">Link</a></td></tr>`;
+        });
+    }
+    
+    html += `</tbody></table>`;
+    document.getElementById('rekap-table-container').innerHTML = html;
+}
 
         // =========================================================
 // FITUR CETAK PDF, CETAK HARIAN & EXPORT EXCEL (UTUH)
