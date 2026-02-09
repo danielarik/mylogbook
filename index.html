@@ -240,27 +240,68 @@
         let profileData = {};
         let masterKamus = [];
 
-        window.onload = () => {
-            const selTahun = document.getElementById('sel-tahun');
-            const cY = new Date().getFullYear();
+        window.onload = async () => {
+    // --- SETUP AWAL (Koding Lama Anda) ---
+        const selTahun = document.getElementById('sel-tahun');
+        const cY = new Date().getFullYear();
+        if (selTahun) {
             for(let y=cY-2; y<=cY+2; y++) {
                 let o = document.createElement('option'); o.value = y; o.innerText = y;
                 if(y===cY) o.selected=true; selTahun.appendChild(o);
             }
-            document.getElementById('log-tgl').valueAsDate = new Date();
-            document.getElementById('tgl-cetak-manual').valueAsDate = new Date();
-            checkUser();
-        };
-
-        function toggleSidebar() {
-            document.getElementById('sidebar').classList.toggle('hidden');
-            document.getElementById('sidebar').classList.toggle('flex');
         }
+        
+        if (document.getElementById('log-tgl')) document.getElementById('log-tgl').valueAsDate = new Date();
+        if (document.getElementById('tgl-cetak-manual')) document.getElementById('tgl-cetak-manual').valueAsDate = new Date();
 
-        function resetFilter() {
-            document.getElementById('search-harian').value = '';
-            document.getElementById('filter-tgl-harian').value = '';
-            loadHistory();
+        // --- LOGIKA "MODE INTIP" ATASAN (Koding Baru) ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const viewUserId = urlParams.get('view');
+
+        if (viewUserId) {
+            console.log("Mode Lihat Atasan Aktif...");
+            
+            // Sembunyikan form login & menu input agar atasan tidak bisa edit
+            const uiToHide = ['sec-login', 'sec-input', 'nav-menu', 'admin-tools'];
+            uiToHide.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+
+            // Tampilkan loading sederhana
+            const container = document.getElementById('rekap-table-container');
+            if (container) container.innerHTML = "<p class='text-center'>Memuat laporan pegawai, mohon tunggu...</p>";
+
+            // Jalankan fungsi ambil data khusus atasan
+            await loadDataForAtasan(viewUserId);
+            
+            // Tampilkan section rekap
+            if (typeof showSection === "function") showSection('sec-rekap'); 
+        } else {
+            // Jika buka normal (bukan lewat link share), jalankan login biasa
+            if (typeof checkUser === "function") checkUser();
+        }
+    };
+
+        async function loadDataForAtasan(userId) {
+            try {
+                // 1. Ambil Profil Anda
+                const { data: pData, error: pErr } = await _supabase.from('profiles').select('*').eq('id', userId).single();
+                if (pData) window.profileData = pData;
+
+                // 2. Ambil Log Kegiatan Anda
+                const { data: lData, error: lErr } = await _supabase.from('logs').select('*, kamus_kegiatan(*)').eq('user_id', userId);
+                if (lData) {
+                    window.logs = lData;
+                    // Langsung tampilkan laporan (default: Matriks)
+                    if (typeof renderRekap === "function") renderRekap('matriks');
+                }
+                
+                if (pErr || lErr) alert("Gagal memuat data. Pastikan ID benar dan internet aktif.");
+                
+            } catch (err) {
+                console.error("Error loading share link:", err);
+            }
         }
 
         async function checkUser() {
@@ -328,9 +369,25 @@
         }
 
         function copyShareLink() {
-            const link = window.location.origin + window.location.pathname + "?view=" + currentUser.id;
-            navigator.clipboard.writeText(link).then(() => alert("Link atasan disalin! Atasan kini dapat melihat semua rekap dan detail harian."));
+    // Mengecek apakah sudah online atau masih file lokal
+        const isLocal = window.location.protocol === 'file:';
+        if (isLocal) {
+            return alert("PERINGATAN: Anda masih membuka file secara lokal. Laporan harus di-onlinekan (misal: GitHub Pages) agar bisa dilihat atasan melalui link.");
         }
+
+        // Membuat link share
+        const link = window.location.origin + window.location.pathname + "?view=" + currentUser.id;
+        
+        // Menyalin ke clipboard
+        navigator.clipboard.writeText(link).then(() => {
+            const pesan = `Halo, berikut link Logbook saya:\n${link}\n\nAtasan dapat melihat Rekap Matriks, Triwulan, dan Detail RM Harian.`;
+            
+            // Opsional: Langsung arahkan ke WA jika ingin lebih praktis
+            if(confirm("Link berhasil disalin!\n\nIngin langsung mengirim ke WhatsApp Atasan?")) {
+                window.open(`https://wa.me/?text=${encodeURIComponent(pesan)}`, '_blank');
+            }
+        });
+    }
 
         async function loadKamus() {
             const { data } = await _supabase.from('kamus_kegiatan').select('*').eq('user_id', currentUser.id).order('created_at');
@@ -592,54 +649,90 @@
             document.getElementById('rekap-table-container').innerHTML = html;
         }
 
-        function printRekap() {
+        // =========================================================
+// FITUR CETAK PDF, CETAK HARIAN & EXPORT EXCEL (UTUH)
+// =========================================================
+
+/**
+ * Fungsi untuk mencetak Laporan Detail RM (Input Harian)
+ */
+async function cetakHarian() {
+    // 1. Ubah Judul Laporan agar sesuai saat dicetak
+    const titleElem = document.getElementById('r-title');
+    if (titleElem) titleElem.innerText = "LAPORAN DETAIL HARIAN (NOMOR RM)";
+
+    // 2. Jalankan render rekap mode harian_print
+    // Memastikan tabel disusun berdasarkan No. RM dan Waktu
+    if (typeof renderRekap === "function") {
+        await renderRekap('harian_print');
+    }
+
+    // 3. Beri jeda 500ms agar browser selesai menyusun tabel di layar
+    setTimeout(() => {
+        printRekap();
+    }, 500);
+}
+
+/**
+ * Fungsi Utama Cetak PDF (General Print)
+ */
+function printRekap() {
     const areaCetak = document.getElementById('sec-rekap');
     if (!areaCetak) return alert("Area cetak tidak ditemukan");
+
+    // Pastikan profileData tersedia
+    const profile = typeof profileData !== 'undefined' ? profileData : {};
 
     const windowPrint = window.open('', '', 'width=1100,height=900');
     
     windowPrint.document.write(`
         <html>
         <head>
-            <title>Cetak Logbook - ${profileData.nama_lengkap}</title>
+            <title>Cetak Logbook - ${profile.nama_lengkap || 'User'}</title>
             <style>
                 @page { size: landscape; margin: 1cm; }
-                body { font-family: "Arial", sans-serif; font-size: 9pt; background: #fff; margin: 0; padding: 20px; }
+                body { font-family: "Arial", sans-serif; font-size: 9pt; background: #fff; margin: 0; padding: 20px; color: #000; }
                 
                 .text-center { text-align: center; }
                 .text-bold { font-weight: bold; }
                 .mb-10 { margin-bottom: 10px; }
                 h2, h3 { margin: 1px 0; text-transform: uppercase; }
 
-                /* Header Identitas Atas - Rata Kiri & Kanan */
-                .header-wrapper { width: 100%; border-collapse: collapse; margin-bottom: 5px; }
+                /* Header Identitas - Rata Kiri & Kanan Presisi */
+                .header-wrapper { width: 100%; border-collapse: collapse; margin-bottom: 10px; border: none !important; }
                 .header-wrapper td { vertical-align: top; border: none !important; padding: 0; }
                 
-                .sub-identitas { border-collapse: collapse; width: auto; }
+                .sub-identitas { border-collapse: collapse; width: auto; border: none !important; }
                 .sub-identitas td { border: none !important; padding: 1px 0; font-size: 9pt; }
-                .label-col { width: 85px; }
+                .label-col { width: 90px; }
                 .pembatas-col { width: 15px; text-align: center; }
 
-                /* Tabel Utama */
+                /* Style Tabel Utama Logbook */
                 table.main-table { width: 100%; border-collapse: collapse; margin-top: 5px; }
-                .main-table th, .main-table td { border: 1px solid black !important; padding: 3px; font-size: 8pt; }
-                .main-table th { background-color: #f2f2f2 !important; -webkit-print-color-adjust: exact; }
+                .main-table th, .main-table td { border: 1px solid black !important; padding: 4px; font-size: 8pt; }
+                .main-table th { background-color: #f2f2f2 !important; -webkit-print-color-adjust: exact; text-align: center; }
                 .text-left-imp { text-align: left !important; }
 
-                /* Bagian Tanda Tangan */
-                .ttd-section { margin-top: 20px; width: 100%; }
+                /* Bagian Tanda Tangan Bawah */
+                .ttd-section { margin-top: 30px; width: 100%; }
                 .ttd-table { width: 100%; border-collapse: collapse; border: none !important; }
-                .ttd-table td { border: none !important; width: 50%; text-align: center; vertical-align: top; font-size: 9pt; }
-                .spacer-ttd { height: 60px; }
+                .ttd-table td { border: none !important; width: 50%; text-align: center; vertical-align: top; font-size: 9.5pt; }
+                .spacer-ttd { height: 70px; }
+                .underline { text-decoration: underline; }
 
-                .no-print, button { display: none !important; }
+                /* Sembunyikan elemen non-cetak */
+                .no-print, button, .btn { display: none !important; }
+                
+                /* Agar Header Tabel muncul di tiap halaman jika tabel panjang */
+                thead { display: table-header-group; }
+                tr { page-break-inside: avoid; }
             </style>
         </head>
         <body>
             <div class="text-center mb-10">
-                <h2 class="text-bold">${profileData.instansi || 'RSUD MERAH PUTIH'}</h2>
-                <h3 class="text-bold">${document.getElementById('r-title').innerText}</h3>
-                <p class="text-bold" style="margin: 2px 0;">${document.getElementById('r-periode').innerText}</p>
+                <h2 class="text-bold">${profile.instansi || 'RSUD MERAH PUTIH'}</h2>
+                <h3 class="text-bold">${document.getElementById('r-title')?.innerText || 'LAPORAN LOGBOOK'}</h3>
+                <p class="text-bold" style="margin: 2px 0;">${document.getElementById('r-periode')?.innerText || ''}</p>
             </div>
 
             <table class="header-wrapper">
@@ -648,15 +741,15 @@
                         <table class="sub-identitas">
                             <tr>
                                 <td class="label-col">Nama</td><td class="pembatas-col">:</td>
-                                <td class="text-bold">${profileData.nama_lengkap || '-'}</td>
+                                <td class="text-bold">${profile.nama_lengkap || '-'}</td>
                             </tr>
                             <tr>
                                 <td class="label-col">NIP</td><td>:</td>
-                                <td>${profileData.nip || '-'}</td>
+                                <td>${profile.nip || '-'}</td>
                             </tr>
                             <tr>
                                 <td class="label-col">Gol/Ruang</td><td>:</td>
-                                <td>${profileData.golongan || '-'}</td>
+                                <td>${profile.golongan || '-'}</td>
                             </tr>
                         </table>
                     </td>
@@ -664,15 +757,15 @@
                         <table class="sub-identitas" style="margin-left: auto;">
                             <tr>
                                 <td class="label-col" style="text-align: left;">Jabatan</td><td class="pembatas-col">:</td>
-                                <td style="text-align: left;">${profileData.jabatan || '-'}</td>
+                                <td style="text-align: left;">${profile.jabatan || '-'}</td>
                             </tr>
                             <tr>
                                 <td class="label-col" style="text-align: left;">Unit Kerja</td><td>:</td>
-                                <td style="text-align: left;">${profileData.unit_kerja || '-'}</td>
+                                <td style="text-align: left;">${profile.unit_kerja || '-'}</td>
                             </tr>
                             <tr>
                                 <td class="label-col" style="text-align: left;">Kab/Kota</td><td>:</td>
-                                <td style="text-align: left;">${profileData.kota || '-'}</td>
+                                <td style="text-align: left;">${profile.kota || '-'}</td>
                             </tr>
                         </table>
                     </td>
@@ -688,17 +781,17 @@
                     <tr>
                         <td>
                             Mengetahui,<br>
-                            ${profileData.atasan_jabatan || 'Atasan Langsung'}<br><br>
+                            ${profile.atasan_jabatan || 'Atasan Langsung'}<br><br>
                             <div class="spacer-ttd"></div>
-                            <span class="text-bold" style="text-decoration: underline;">${profileData.atasan_nama || '-'}</span><br>
-                            NIP. ${profileData.atasan_nip || '-'}
+                            <span class="text-bold underline">${profile.atasan_nama || '-'}</span><br>
+                            NIP. ${profile.atasan_nip || '-'}
                         </td>
                         <td>
-                            ${profileData.kota || 'Kota'}, ${document.getElementById('r-tgl-cetak').innerText.split(',')[1] || ''}<br>
+                            ${profile.kota || 'Kota'}, ${document.getElementById('r-tgl-cetak')?.innerText?.split(',')[1] || ''}<br>
                             Pejabat Fungsional<br><br>
                             <div class="spacer-ttd"></div>
-                            <span class="text-bold" style="text-decoration: underline;">${profileData.nama_lengkap || '-'}</span><br>
-                            NIP. ${profileData.nip || '-'}
+                            <span class="text-bold underline">${profile.nama_lengkap || '-'}</span><br>
+                            NIP. ${profile.nip || '-'}
                         </td>
                     </tr>
                 </table>
@@ -710,42 +803,40 @@
     windowPrint.document.close();
     windowPrint.focus();
     
+    // Beri waktu browser untuk memuat gambar/gaya sebelum print
     setTimeout(() => {
         windowPrint.print();
         windowPrint.close();
-    }, 750);
+    }, 800);
 }
-        function exportToExcel() {
-    // 1. Persiapan Nama File dan Judul
+
+/**
+ * Fungsi Export ke Excel (Format Rapi)
+ */
+function exportToExcel() {
     const fileName = 'Logbook_' + (profileData.nama_lengkap || 'User') + '_' + new Date().getTime() + '.xls';
-    const title = document.getElementById('r-title').innerText;
-    const periode = document.getElementById('r-periode').innerText;
+    const title = document.getElementById('r-title')?.innerText || '';
+    const periode = document.getElementById('r-periode')?.innerText || '';
     const tableContainer = document.querySelector('#rekap-table-container');
     
     if (!tableContainer) return alert("Data tabel tidak ditemukan!");
     const tableContent = tableContainer.innerHTML;
 
-    // 2. Hitung total kolom tabel untuk mengatur Colspan agar identitas rata kanan-kiri
+    // Hitung total kolom untuk mengatur colspan judul
     const firstRow = document.querySelector('#rekap-table-container table tr');
-    const totalCols = firstRow ? firstRow.cells.length : 35;
+    const totalCols = firstRow ? firstRow.cells.length : 30;
     const midPoint = Math.floor(totalCols / 2);
 
-    // 3. Template HTML khusus Excel
     const template = `
         <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-        <head>
-            <meta charset="utf-8">
-            <style>
-                .text-center { text-align: center; vertical-align: middle; }
-                .text-bold { font-weight: bold; }
-                .text-left { text-align: left; vertical-align: middle; }
-                .main-table th { border: 0.5pt solid black; background-color: #f2f2f2; font-weight: bold; text-align: center; }
-                .main-table td { border: 0.5pt solid black; text-align: center; }
-                .main-table .text-left-imp { text-align: left !important; }
-                /* Mengatur agar NIP dianggap teks (tidak berubah jadi angka ilmiah) */
-                .str { mso-number-format:"\\@"; } 
-                .underline { text-decoration: underline; }
-            </style>
+        <head><meta charset="utf-8">
+        <style>
+            .text-center { text-align: center; vertical-align: middle; }
+            .text-bold { font-weight: bold; }
+            .main-table th { border: 0.5pt solid black; background-color: #f2f2f2; font-weight: bold; }
+            .main-table td { border: 0.5pt solid black; vertical-align: middle; }
+            .str { mso-number-format:"\\@"; } /* Format NIP sebagai text */
+        </style>
         </head>
         <body>
             <table>
@@ -753,54 +844,25 @@
                 <tr><td colspan="${totalCols}" class="text-center text-bold" style="font-size: 12pt;">${title}</td></tr>
                 <tr><td colspan="${totalCols}" class="text-center text-bold">${periode}</td></tr>
                 <tr><td colspan="${totalCols}">&nbsp;</td></tr>
-
+                
                 <tr>
                     <td class="text-bold">Nama</td><td class="text-center">:</td>
-                    <td colspan="${midPoint - 2}" class="text-bold text-left">${profileData.nama_lengkap || '-'}</td>
+                    <td colspan="${midPoint - 2}" class="text-bold">${profileData.nama_lengkap || '-'}</td>
                     <td class="text-bold">Jabatan</td><td class="text-center">:</td>
-                    <td colspan="${totalCols - midPoint - 2}" class="text-left">${profileData.jabatan || '-'}</td>
+                    <td colspan="${totalCols - midPoint - 2}">${profileData.jabatan || '-'}</td>
                 </tr>
                 <tr>
                     <td>NIP</td><td class="text-center">:</td>
-                    <td colspan="${midPoint - 2}" class="str text-left">${profileData.nip || '-'}</td>
+                    <td colspan="${midPoint - 2}" class="str">${profileData.nip || '-'}</td>
                     <td>Unit Kerja</td><td class="text-center">:</td>
-                    <td colspan="${totalCols - midPoint - 2}" class="text-left">${profileData.unit_kerja || '-'}</td>
-                </tr>
-                <tr>
-                    <td>Gol/Ruang</td><td class="text-center">:</td>
-                    <td colspan="${midPoint - 2}" class="text-left">${profileData.golongan || '-'}</td>
-                    <td>Kab/Kota</td><td class="text-center">:</td>
-                    <td colspan="${totalCols - midPoint - 2}" class="text-left">${profileData.kota || '-'}</td>
+                    <td colspan="${totalCols - midPoint - 2}">${profileData.unit_kerja || '-'}</td>
                 </tr>
                 <tr><td colspan="${totalCols}">&nbsp;</td></tr>
             </table>
-
-            <div class="main-table">
-                ${tableContent}
-            </div>
-
-            <br>
-
-            <table>
-                <tr>
-                    <td colspan="${midPoint}" class="text-center">
-                        Mengetahui,<br>
-                        ${profileData.atasan_jabatan || ''}<br><br><br><br>
-                        <span class="text-bold underline">${profileData.atasan_nama || '-'}</span><br>
-                        NIP. <span class="str">${profileData.atasan_nip || '-'}</span>
-                    </td>
-                    <td colspan="${totalCols - midPoint}" class="text-center">
-                        ${profileData.kota || 'Kota'}, ${document.getElementById('r-tgl-cetak').innerText.split(',')[1] || ''}<br>
-                        Pejabat Fungsional<br><br><br><br>
-                        <span class="text-bold underline">${profileData.nama_lengkap || '-'}</span><br>
-                        NIP. <span class="str">${profileData.nip || '-'}</span>
-                    </td>
-                </tr>
-            </table>
+            <div class="main-table">${tableContent}</div>
         </body>
         </html>`;
 
-    // 4. Proses Download File
     const blob = new Blob([template], { type: 'application/vnd.ms-excel' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -809,7 +871,6 @@
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 }
         
     </script>
