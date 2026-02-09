@@ -569,7 +569,7 @@ async function loadDataForAtasan(userId) {
             checkUser();
         }
 
-        async function renderRekap(mode) {
+      async function renderRekap(mode) {
     // 1. Persiapan Awal & Navigasi
     showSection('sec-rekap');
     
@@ -607,7 +607,7 @@ async function loadDataForAtasan(userId) {
     const tglCetak = tglCetakVal ? new Date(tglCetakVal) : new Date();
     document.getElementById('r-tgl-cetak').innerText = `${profileData.kota || 'Kota'}, ${tglCetak.toLocaleDateString('id-ID', {day:'numeric', month:'long', year:'numeric'})}`;
 
-    // 3. Penentuan Range Tanggal Filter
+    // 3. Penentuan Range Tanggal Filter Berdasarkan Mode
     let startDate, endDate;
     if(mode === 'matriks' || mode === 'harian_print') {
         const bulanStr = String(bln + 1).padStart(2, '0');
@@ -630,7 +630,7 @@ async function loadDataForAtasan(userId) {
         document.getElementById('r-periode').innerText = `Periode Tahun: ${thn}`;
     }
 
-    // 4. Pengambilan Data dari Supabase (Menggunakan targetUserId)
+    // 4. Pengambilan Data dari Supabase (Filter sesuai Tanggal yang dipilih)
     const { data: logs, error: errLogs } = await _supabase.from('logbook_harian')
         .select('*, kamus_kegiatan(*)')
         .eq('user_id', targetUserId)
@@ -726,12 +726,25 @@ async function loadDataForAtasan(userId) {
                      ${rowBulan}<td class="font-bold text-center">${thnTotal}</td></tr>`;
         });
 
-    // --- MODE 4: DETAIL HARIAN ---
+    // --- MODE 4: DETAIL HARIAN (Sesuai Bulan yang Dipilih) ---
     } else if(mode === 'harian_print') {
         html += `<tr><th>No</th><th>Tanggal</th><th>Butir Kegiatan</th><th>No. RM</th><th>Waktu</th><th>Qty</th><th>Bukti</th></tr></thead><tbody>`;
-        (logs || []).sort((a,b) => new Date(a.tanggal) - new Date(b.tanggal)).forEach((l, i) => {
-            html += `<tr><td class="text-center">${i+1}</td><td class="text-center">${l.tanggal}</td><td class="text-left-imp">${l.kamus_kegiatan?.nama_kegiatan || '-'}</td><td class="text-center">${l.no_rm || '-'}</td><td class="text-center">${l.jam_mulai} - ${l.jam_selesai}</td><td class="text-center">${l.qty}</td><td class="text-center"><a href="${l.kamus_kegiatan?.link_bukti_dukung || '#'}" target="_blank">Link</a></td></tr>`;
-        });
+        
+        if (logs && logs.length > 0) {
+            logs.sort((a,b) => new Date(a.tanggal) - new Date(b.tanggal)).forEach((l, i) => {
+                html += `<tr>
+                    <td class="text-center">${i+1}</td>
+                    <td class="text-center">${l.tanggal}</td>
+                    <td class="text-left-imp">${l.kamus_kegiatan?.nama_kegiatan || '-'}</td>
+                    <td class="text-center">${l.no_rm || '-'}</td>
+                    <td class="text-center">${l.jam_mulai} - ${l.jam_selesai}</td>
+                    <td class="text-center">${l.qty}</td>
+                    <td class="text-center"><a href="${l.kamus_kegiatan?.link_bukti_dukung || '#'}" target="_blank" class="text-blue-600 underline">Link</a></td>
+                </tr>`;
+            });
+        } else {
+            html += `<tr><td colspan="7" class="p-10 text-center text-slate-400 italic">Tidak ada data logbook untuk periode ${listBulan[bln]} ${thn}</td></tr>`;
+        }
     }
     
     html += `</tbody></table>`;
